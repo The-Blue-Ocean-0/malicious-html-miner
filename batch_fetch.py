@@ -4,23 +4,44 @@ import time
 import json
 import os
 import re
+import logging
 from playwright.async_api import async_playwright
 
 # ------------------- 설정 -------------------
 RESULT_DIR = 'data/results/batch_results'     # バッチ結果フォルダ
-EXEC_FILE = 'urls_data.csv'     # 実行ファイル
+LOG_DIR = 'data/log'                          # ログ保存フォルダ
+EXEC_FILE = 'urls_data.csv'                   # 実行ファイル
 SCREENSHOT_DIR = 'data/screenshots'           # スクリーンショット保存先
 ENABLE_SCREENSHOT = False
-BATCH_SIZE =20                           # 1バッチごとのURL数   
+BATCH_SIZE = 20                               # 1バッチごとのURL数   
 MAX_CONCURRENT = 5                            # 同時接続最大数
 NONE_DATA = 'null'
 # --------------------------------------------
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
-sem = asyncio.Semaphore(MAX_CONCURRENT)
+os.makedirs(LOG_DIR, exist_ok=True)
 
-async def extract_head_elements(url, index, total):
+# ロガーをバッチごとに設定
+def setup_logger(batch_num):
+    logger = logging.getLogger(f"batch_{batch_num}")
+    logger.setLevel(logging.INFO)
+
+    if not logger.handlers:
+        log_path = f"{LOG_DIR}/batch_{batch_num}.log"
+        handler = logging.FileHandler(log_path, encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+        # コンソール出力も追加（任意）
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        logger.addHandler(console)
+
+    return logger
+
+async def extract_head_elements(url, batch_index, batch_total, logger, batch_num):
     result = {
         "original_url": url,
         "final_url": None,
@@ -33,7 +54,7 @@ async def extract_head_elements(url, index, total):
         "duration_sec": None,
     }
 
-    print(f"[{index+1}/{total}] ▶️ Start: {url}")
+    logger.info(f"[BATCH {batch_num}][{batch_index}/{batch_total}] ▶️ Start: {url}")
     start_time = time.time()
 
     try:
@@ -83,48 +104,44 @@ async def extract_head_elements(url, index, total):
                     result["head_elements"] = elements
                 else:
                     if ENABLE_SCREENSHOT:
-                        await page.screenshot(path=f"{SCREENSHOT_DIR}/{index+1}.png")
+                        await page.screenshot(path=f"{SCREENSHOT_DIR}/{batch_index+1}.png")
 
             except Exception as e:
-                print(f"[{index+1}/{total}] ⚠️ Error loading {url}: {e}")
+                logger.warning(f"[BATCH {batch_num}][{batch_index}/{batch_total}] ⚠️ Error loading {url}: {e}")
                 if "Timeout" in str(e):
                     result["timeout"] = True
                 if ENABLE_SCREENSHOT:
-                    await page.screenshot(path=f"{SCREENSHOT_DIR}/{index+1}.png")
+                    await page.screenshot(path=f"{SCREENSHOT_DIR}/{batch_index+1}.png")
             finally:
                 await browser.close()
     except Exception as e:
-        print(f"[{index+1}/{total}] ❌ Critical error for {url}: {e}")
+        logger.error(f"[BATCH {batch_num}][{batch_index}/{batch_total}] ❌ Critical error for {url}: {e}")
         result["timeout"] = True
 
     result["duration_sec"] = round(time.time() - start_time, 2)
-    print(f"[{index+1}/{total}] ✅ Done in {result['duration_sec']}s\n")
+    logger.info(f"[BATCH {batch_num}][{batch_index}/{batch_total}] ✅ Done in {result['duration_sec']}s\n")
     return result
 
-async def extract_with_limit(url, index, total):
-    async with sem:
-        return await extract_head_elements(url, index, total)
-
-async def process_urls_batch(urls, start_index):
+async def process_urls_batch(urls, batch_start_index, batch_num):
     sem = asyncio.Semaphore(MAX_CONCURRENT)
-    total = len(urls)
+    batch_total = len(urls)
+    logger = setup_logger(batch_num)
 
-    async def extract_with_limit(url, index):
+    async def extract_with_limit(url, batch_index):
         async with sem:
-            return await extract_head_elements(url, index, total)
+            return await extract_head_elements(url, batch_index, batch_total, logger, batch_num)
 
     tasks = [
         extract_with_limit(
             "http://" + url if not url.startswith("http") else url,
-            start_index + idx
+            idx  # バッチ内インデックス（0～BATCH_SIZE-1）
         )
         for idx, url in enumerate(urls)
     ]
     return await asyncio.gather(*tasks)
 
-
 # ---------------- 실행부 ----------------
-df = pd.read_csv(EXEC_FILE,low_memory=False)
+df = pd.read_csv(EXEC_FILE, low_memory=False)
 urls = df["original_url"].dropna().tolist()
 total_urls = len(urls)
 
@@ -132,12 +149,13 @@ all_result_paths = []
 
 for batch_idx in range(0, total_urls, BATCH_SIZE):
     batch_urls = urls[batch_idx:batch_idx + BATCH_SIZE]
-    print(f"\n🚀 Batch {batch_idx // BATCH_SIZE + 1}: Processing {len(batch_urls)} URLs...")
+    batch_num = batch_idx // BATCH_SIZE + 1
+    print(f"\n🚀 Batch {batch_num}: Processing {len(batch_urls)} URLs...")
 
-    results = asyncio.run(process_urls_batch(batch_urls, batch_idx))
+    results = asyncio.run(process_urls_batch(batch_urls, batch_idx, batch_num))
     results_df = pd.DataFrame(results)
 
-    result_file = f"{RESULT_DIR}/batch_{batch_idx // BATCH_SIZE + 1}.csv"
+    result_file = f"{RESULT_DIR}/batch_{batch_num}.csv"
     results_df.to_csv(result_file, index=False, na_rep=NONE_DATA)
     all_result_paths.append(result_file)
 
