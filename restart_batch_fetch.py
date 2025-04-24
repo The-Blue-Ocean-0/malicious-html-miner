@@ -6,6 +6,7 @@ import os
 import re
 import logging
 from playwright.async_api import async_playwright
+from notifier import send_slack_message
 
 # ------------------- 설정 -------------------
 RESULT_DIR = 'data/results/batch_results'
@@ -113,7 +114,10 @@ async def extract_head_elements(url, batch_index, batch_total, logger, batch_num
     except Exception as e:
         logger.error(f"[BATCH {batch_num}][{batch_index}/{batch_total}] ❌ Critical error for {url}: {e}")
         result["timeout"] = True
-
+        result["error_message"] = str(e)[:200]  # ← ✨ここでエラーメッセージを保存
+        send_slack_message(f"❌ [BATCH {batch_num}][{batch_index}/{batch_total}] Error for {url}\n{str(e)[:150]}")
+        return result  # ← ✨必ず return して次に進めるように
+    
     result["duration_sec"] = round(time.time() - start_time, 2)
     logger.info(f"[BATCH {batch_num}][{batch_index}/{batch_total}] ✅ Done in {result['duration_sec']}s\n")
     return result
