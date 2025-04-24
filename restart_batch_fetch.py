@@ -5,6 +5,7 @@ import json
 import os
 import re
 import logging
+import argparse
 from playwright.async_api import async_playwright
 from notifier import send_slack_message
 
@@ -17,12 +18,18 @@ ENABLE_SCREENSHOT = False
 BATCH_SIZE = 1000
 MAX_CONCURRENT = 50
 NONE_DATA = 'null'
-START_BATCH_NUM = 73  # ← ここで再開したいバッチ番号を指定
+START_BATCH_NUM = 15  # ← ここで再開したいバッチ番号を指定
 # --------------------------------------------
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
+
+# コマンドライン引数の処理
+parser = argparse.ArgumentParser(description="Start batch processing from a specific batch number.")
+parser.add_argument('--start', type=int, default=0, help='Start from batch number (default: 0)')
+args = parser.parse_args()
+START_BATCH_NUM = args.start
 
 def setup_logger(batch_num):
     logger = logging.getLogger(f"batch_{batch_num}")
