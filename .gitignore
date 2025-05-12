@@ -3,3 +3,4 @@
 data/results
 data/log
 __pycache__
+data/*
